@@ -168,3 +168,39 @@ def test_plan_next_step_fallback_prefers_newly_observed_button() -> None:
 
     assert trace["parsed_output"]["step"]["action"] == "click"
     assert trace["parsed_output"]["step"]["selector"] == ".added-manually"
+
+
+def test_component_scenario_fallback_groups_login_form_into_one_attempt() -> None:
+    client = LLMClient(api_key="", model="deepseek-v4-pro", base_url="https://api.deepseek.com")
+    page = {
+        "title": "Login",
+        "elements": [
+            {"kind": "input", "label": "username", "selector": "#username"},
+            {"kind": "input", "label": "password", "type": "password", "selector": "#password"},
+            {"kind": "button", "text": "Login", "selector": "#login"},
+        ],
+    }
+
+    trace = asyncio.run(client.plan_component_scenarios_with_trace("https://example.com/login", page, max_components=10))
+
+    assert trace["purpose"] == "plan_component_scenarios"
+    assert trace["called_model"] is False
+    assert len(trace["parsed_output"]) == 1
+    scenario = trace["parsed_output"][0]
+    assert scenario["target_components"] == ["#username", "#password", "#login"]
+    assert [step["action"] for step in scenario["steps"]] == ["fill", "fill", "click"]
+    assert [step["selector"] for step in scenario["steps"]] == ["#username", "#password", "#login"]
+
+
+def test_component_scenario_fallback_uses_chinese_descriptions() -> None:
+    client = LLMClient(api_key="", model="deepseek-v4-pro", base_url="https://api.deepseek.com")
+    page = {
+        "title": "Dynamic",
+        "elements": [{"kind": "button", "text": "Add Element", "selector": "button"}],
+    }
+
+    trace = asyncio.run(client.plan_component_scenarios_with_trace("https://example.com", page, max_components=10))
+
+    scenario = trace["parsed_output"][0]
+    assert scenario["name"] == "组件流程：Add Element"
+    assert scenario["steps"][0]["description"] == "点击 Add Element"

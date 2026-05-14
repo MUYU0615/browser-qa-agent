@@ -27,7 +27,7 @@ PAGE_SUMMARY_SCRIPT = """
     }
     return parts.join(' > ');
   }
-  return Array.from(document.querySelectorAll('a,button,input,textarea,select'))
+  return Array.from(document.querySelectorAll('a,button,input,textarea,select,[role="button"],[role="link"],[tabindex]'))
   .filter((el) => {
     const style = window.getComputedStyle(el);
     const rect = el.getBoundingClientRect();
@@ -39,11 +39,14 @@ PAGE_SUMMARY_SCRIPT = """
     const text = (el.innerText || el.value || '').trim().slice(0, 80);
     const label = el.getAttribute('aria-label') || el.getAttribute('name') || '';
     const placeholder = el.getAttribute('placeholder') || '';
+    const role = el.getAttribute('role') || '';
+    const type = el.getAttribute('type') || '';
     return {
-      kind: tag === 'a' ? 'link' : tag,
+      kind: tag === 'a' ? 'link' : role || tag,
       text,
       label,
       placeholder,
+      type,
       selector: cssPath(el),
       disabled: Boolean(el.disabled),
       href: el.href || ''
@@ -78,6 +81,143 @@ class BrowserService:
     ) -> dict[str, Any]:
         loop = asyncio.get_running_loop()
         return await asyncio.to_thread(self._execute_stepwise_sync, url, run_id, planner, max_steps, loop)
+
+    async def execute_component_coverage(
+        self,
+        url: str,
+        run_id: str,
+        max_components: int = 25,
+        dynamic_depth: int = 1,
+        scenarios: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        return await asyncio.to_thread(
+            self._execute_component_coverage_sync,
+            url,
+            run_id,
+            max_components,
+            dynamic_depth,
+            scenarios,
+        )
+
+    def _execute_component_coverage_sync(
+        self,
+        url: str,
+        run_id: str,
+        max_components: int,
+        dynamic_depth: int,
+        scenarios: list[dict[str, Any]] | None,
+    ) -> dict[str, Any]:
+        from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+        from playwright.sync_api import sync_playwright
+
+        all_console_errors: list[dict[str, Any]] = []
+        all_network_errors: list[dict[str, Any]] = []
+        all_execution_results: list[dict[str, Any]] = []
+        all_screenshots: list[str] = []
+        all_steps: list[dict[str, Any]] = []
+        attempts: list[dict[str, Any]] = []
+        last_page: dict[str, Any] = {"title": "", "elements": []}
+
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(headless=True)
+            inventory_page = browser.new_page(viewport={"width": 1440, "height": 1000})
+            inventory_page.goto(url, wait_until="domcontentloaded", timeout=30_000)
+            self._wait_for_network_idle(inventory_page)
+            initial_page = self._page_summary_sync(inventory_page)
+            inventory_page.close()
+
+            planned_scenarios = scenarios or component_scenarios_from_page(initial_page, max_components)
+            tested_keys = {
+                key
+                for scenario in planned_scenarios
+                for key in scenario_component_keys(scenario)
+            }
+            for element in initial_page.get("elements", []):
+                if should_test_component(element):
+                    tested_keys.update(component_identity_keys(element))
+            attempt_number = 0
+            while planned_scenarios and attempt_number < max_components:
+                scenario = planned_scenarios.pop(0)
+                attempt_number += 1
+                page_console_errors: list[dict[str, Any]] = []
+                page_network_errors: list[dict[str, Any]] = []
+                branch_steps: list[dict[str, Any]] = [step for step in scenario.get("steps", []) if isinstance(step, dict)]
+                branch_results: list[dict[str, Any]] = []
+                branch_screenshots: list[str] = []
+
+                page = browser.new_page(viewport={"width": 1440, "height": 1000})
+                self._wire_observers(page, page_console_errors, page_network_errors)
+                page.goto(url, wait_until="domcontentloaded", timeout=30_000)
+                self._wait_for_network_idle(page)
+
+                for step_number, step in enumerate(branch_steps, start=1):
+                    try:
+                        self._execute_step_sync(page, step)
+                        ok = True
+                        error = None
+                    except PlaywrightTimeoutError as exc:
+                        ok = False
+                        error = f"Timeout while running step: {exc}"
+                    except Exception as exc:
+                        ok = False
+                        error = str(exc)
+
+                    shot = self._screenshot_sync(page, run_id, scenario_screenshot_filename(attempt_number, step_number))
+                    result = {
+                        **step,
+                        "ok": ok,
+                        "error": error,
+                        "screenshot": shot,
+                        "scenario": scenario.get("name", f"Scenario {attempt_number}"),
+                        "page_url": page.url,
+                    }
+                    branch_results.append(result)
+                    branch_screenshots.append(shot)
+
+                    if not ok:
+                        break
+                    last_page = self._page_summary_sync(page)
+                    if same_page(url, last_page.get("url", "")):
+                        new_scenarios = component_scenarios_from_page(
+                            last_page,
+                            max_components=max_components,
+                            seen_keys=tested_keys,
+                        )
+                        for new_scenario in new_scenarios:
+                            tested_keys.update(scenario_component_keys(new_scenario))
+                            branch_steps.extend(new_scenario.get("steps", []))
+
+                page.close()
+                all_console_errors.extend(page_console_errors)
+                all_network_errors.extend(page_network_errors)
+                all_execution_results.extend(branch_results)
+                all_screenshots.extend(branch_screenshots)
+                all_steps.extend(branch_steps)
+                attempts.append(
+                    {
+                        "attempt": attempt_number,
+                        "phase": "scenario",
+                        "target": scenario.get("name", f"Scenario {attempt_number}"),
+                        "test_steps": branch_steps,
+                        "execution_results": branch_results,
+                        "console_errors": page_console_errors,
+                        "network_errors": page_network_errors,
+                        "screenshots": branch_screenshots,
+                    }
+                )
+
+            browser.close()
+
+        return {
+            "title": last_page.get("title") or initial_page.get("title", ""),
+            "elements": initial_page.get("elements", []),
+            "test_steps": all_steps,
+            "execution_results": all_execution_results,
+            "console_errors": all_console_errors,
+            "network_errors": all_network_errors,
+            "screenshots": all_screenshots,
+            "attempts": attempts,
+        }
 
     def _execute_stepwise_sync(
         self,
@@ -241,6 +381,14 @@ class BrowserService:
             if not selector:
                 raise ValueError("Fill step is missing selector")
             page.locator(selector).first.fill(str(step.get("value", "qa@example.com")), timeout=5_000)
+        elif action == "check":
+            if not selector:
+                raise ValueError("Check step is missing selector")
+            page.locator(selector).first.check(timeout=5_000)
+        elif action == "select":
+            if not selector:
+                raise ValueError("Select step is missing selector")
+            page.locator(selector).first.select_option(index=1, timeout=5_000)
         elif action == "click":
             if not selector:
                 raise ValueError("Click step is missing selector")
@@ -338,6 +486,141 @@ class BrowserService:
 
 def screenshot_filename(attempt_number: int, step_number: int) -> str:
     return f"attempt-{attempt_number}-step-{step_number}.png"
+
+
+def component_screenshot_filename(attempt_number: int, step_number: int) -> str:
+    return f"component-{attempt_number}-step-{step_number}.png"
+
+
+def scenario_screenshot_filename(attempt_number: int, step_number: int) -> str:
+    return f"scenario-{attempt_number}-step-{step_number}.png"
+
+
+def component_scenarios_from_page(
+    page: dict[str, Any],
+    max_components: int = 25,
+    seen_keys: set[str] | None = None,
+) -> list[dict[str, Any]]:
+    seen = seen_keys or set()
+    targets = [
+        element
+        for element in page.get("elements", [])
+        if should_test_component(element)
+        and component_key(element) not in seen
+        and element.get("selector") not in seen
+        and not component_identity_keys(element).intersection(seen)
+    ]
+    scenarios: list[dict[str, Any]] = []
+    pending_fields: list[dict[str, Any]] = []
+    covered = 0
+
+    def add_scenario(name: str, components: list[dict[str, Any]]) -> None:
+        nonlocal covered
+        if covered >= max_components:
+            return
+        selected = components[: max_components - covered]
+        steps = [component_test_step(component) for component in selected]
+        selectors = [component.get("selector") for component in selected if component.get("selector")]
+        if steps:
+            scenarios.append({"name": name, "target_components": selectors, "steps": steps})
+            covered += len(selected)
+
+    for target in targets:
+        kind = target.get("kind")
+        if kind in {"input", "textarea", "select"}:
+            pending_fields.append(target)
+            continue
+        if kind in {"button", "link"}:
+            if pending_fields:
+                components = [*pending_fields, target]
+                add_scenario(scenario_label(components), components)
+                pending_fields = []
+            else:
+                add_scenario(scenario_label([target]), [target])
+
+    if pending_fields:
+        add_scenario(scenario_label(pending_fields), pending_fields)
+
+    return scenarios
+
+
+def component_key(component: dict[str, Any]) -> str:
+    return f"{component.get('kind', 'unknown')}:{component.get('selector') or component.get('text') or component.get('label')}"
+
+
+def component_identity_keys(component: dict[str, Any]) -> set[str]:
+    kind = str(component.get("kind", "unknown"))
+    keys = {component_key(component)}
+    selector = component.get("selector")
+    text = component.get("text")
+    label = component.get("label")
+    placeholder = component.get("placeholder")
+    if selector:
+        keys.add(str(selector))
+    if text:
+        keys.add(f"{kind}:text:{text}")
+    if label:
+        keys.add(f"{kind}:label:{label}")
+    if placeholder:
+        keys.add(f"{kind}:placeholder:{placeholder}")
+    return keys
+
+
+def component_label(component: dict[str, Any]) -> str:
+    return str(component.get("text") or component.get("label") or component.get("placeholder") or component.get("selector") or "component")
+
+
+def scenario_label(components: list[dict[str, Any]]) -> str:
+    labels = [component_label(component) for component in components]
+    text = " ".join(labels).lower()
+    if "login" in text or ("password" in text and ("user" in text or "email" in text)):
+        return "登录流程"
+    if "search" in text:
+        return "搜索流程"
+    if len(components) > 1:
+        return f"表单流程：{labels[-1]}"
+    return f"组件流程：{labels[0]}"
+
+
+def should_test_component(component: dict[str, Any]) -> bool:
+    if component.get("disabled"):
+        return False
+    if not component.get("selector"):
+        return False
+    return component.get("kind") in {"link", "button", "input", "textarea", "select"}
+
+
+def component_test_step(component: dict[str, Any]) -> dict[str, Any]:
+    kind = component.get("kind")
+    selector = component.get("selector")
+    label = component_label(component)
+    if kind in {"button", "link"}:
+        return {"description": f"测试组件：点击 {label}", "action": "click", "selector": selector}
+    if kind == "select":
+        return {"description": f"测试组件：选择 {label}", "action": "select", "selector": selector}
+    if kind == "input" and str(component.get("type", "")).lower() in {"checkbox", "radio"}:
+        return {"description": f"测试组件：切换 {label}", "action": "check", "selector": selector}
+    if kind in {"input", "textarea"}:
+        return {"description": f"测试组件：填写 {label}", "action": "fill", "selector": selector, "value": "qa@example.com"}
+    return {"description": f"测试组件：点击 {label}", "action": "click", "selector": selector}
+
+
+def scenario_component_keys(scenario: dict[str, Any]) -> set[str]:
+    keys: set[str] = set()
+    for step in scenario.get("steps", []):
+        if not isinstance(step, dict):
+            continue
+        selector = step.get("selector")
+        action = step.get("action")
+        if selector and action in {"click", "fill", "check", "select"}:
+            kind = "button" if action == "click" else "input"
+            keys.add(str(selector))
+            keys.add(f"{kind}:{selector}")
+    return keys
+
+
+def same_page(original_url: str, current_url: str) -> bool:
+    return current_url.split("#", 1)[0] == original_url.split("#", 1)[0]
 
 
 def run_planner_sync(

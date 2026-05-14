@@ -135,6 +135,48 @@ async def stepwise_executor_node(state: QAState) -> QAState:
     }
 
 
+async def component_coverage_executor_node(state: QAState) -> QAState:
+    store = state["run_store"]
+    run_id = state["run_id"]
+    max_components = int(state.get("max_components", 25))
+    store.update_run(run_id, current_node="component_coverage_executor")
+    store.append_event(run_id, "component_coverage_executor", f"Planning scenarios for up to {max_components} interactive components")
+    page = {"title": state.get("title", ""), "url": state["url"], "elements": state.get("elements", [])}
+    trace = await state["llm"].plan_component_scenarios_with_trace(state["url"], page, max_components=max_components)
+    store.append_llm_call(run_id, {"node": "component_coverage_executor", **trace})
+    scenarios = sanitize_component_scenarios(trace.get("parsed_output", []))
+    if hasattr(store, "save_json"):
+        store.save_json(run_id, "component_scenarios.json", scenarios)
+    store.append_event(
+        run_id,
+        "component_coverage_executor",
+        f"Executing {len(scenarios)} planned scenarios"
+        if trace.get("called_model")
+        else f"Executing {len(scenarios)} fallback scenarios: {trace.get('fallback_reason', '')}",
+    )
+    result = await state["browser"].execute_component_coverage(
+        state["url"],
+        run_id,
+        max_components=max_components,
+        scenarios=scenarios,
+    )
+    screenshots = [*state.get("screenshots", []), *result.get("screenshots", [])]
+    attempts = [*state.get("attempts", []), *result.get("attempts", [])]
+    store.update_run(run_id, screenshots=screenshots, attempts=attempts)
+    return {
+        **state,
+        "title": result.get("title", state.get("title", "")),
+        "elements": result.get("elements", state.get("elements", [])),
+        "test_steps": result.get("test_steps", []),
+        "planned_steps": result.get("test_steps", []),
+        "attempts": attempts,
+        "execution_results": result.get("execution_results", []),
+        "console_errors": [*state.get("console_errors", []), *result.get("console_errors", [])],
+        "network_errors": [*state.get("network_errors", []), *result.get("network_errors", [])],
+        "screenshots": screenshots,
+    }
+
+
 async def observation_analyzer_node(state: QAState) -> QAState:
     store = state["run_store"]
     run_id = state["run_id"]
@@ -206,6 +248,27 @@ def is_dangerous_step(step: dict[str, Any]) -> bool:
         or any(phrase in text for phrase in DANGEROUS_PHRASES)
         or any(marker in text for marker in ACTIVE_SCRIPT_MARKERS)
     )
+
+
+def sanitize_component_scenarios(scenarios: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    safe_scenarios: list[dict[str, Any]] = []
+    for index, scenario in enumerate(scenarios, start=1):
+        if not isinstance(scenario, dict):
+            continue
+        steps = scenario.get("steps", [])
+        if not isinstance(steps, list):
+            continue
+        safe_steps = [step for step in steps if isinstance(step, dict) and not is_dangerous_step(step)]
+        if not safe_steps:
+            continue
+        safe_scenarios.append(
+            {
+                "name": str(scenario.get("name") or f"Scenario {index}"),
+                "target_components": scenario.get("target_components", []),
+                "steps": safe_steps,
+            }
+        )
+    return safe_scenarios
 
 
 def is_redundant_step(step: dict[str, Any], history: list[dict[str, Any]]) -> bool:

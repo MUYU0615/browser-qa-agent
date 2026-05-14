@@ -3,6 +3,7 @@ import asyncio
 from app.graph.nodes import (
     build_attempt,
     classify_issues,
+    component_coverage_executor_node,
     console_issue_severity,
     is_dangerous_step,
     is_redundant_step,
@@ -84,6 +85,60 @@ class FakeStepwiseBrowser:
             "console_errors": [],
             "network_errors": [],
             "screenshots": [],
+        }
+
+
+class FakeScenarioLlm:
+    async def plan_component_scenarios_with_trace(self, url: str, page: dict, max_components: int = 25) -> dict:
+        return {
+            "purpose": "plan_component_scenarios",
+            "called_model": False,
+            "model": "fake",
+            "base_url": "fake",
+            "prompt": "",
+            "raw_output": "",
+            "parsed_output": [
+                {
+                    "name": "Login flow",
+                    "target_components": ["#username", "#password", "#login"],
+                    "steps": [
+                        {"description": "Fill username", "action": "fill", "selector": "#username", "value": "qa_user"},
+                        {"description": "Fill password", "action": "fill", "selector": "#password", "value": "Password123!"},
+                        {"description": "Click Login", "action": "click", "selector": "#login"},
+                    ],
+                }
+            ],
+            "fallback_reason": "test",
+        }
+
+
+class FakeScenarioBrowser:
+    def __init__(self) -> None:
+        self.scenarios: list[dict] = []
+
+    async def execute_component_coverage(self, url: str, run_id: str, max_components: int = 25, scenarios=None) -> dict:
+        self.scenarios = scenarios or []
+        steps = self.scenarios[0]["steps"]
+        return {
+            "title": "Login",
+            "elements": [],
+            "test_steps": steps,
+            "execution_results": [{**step, "ok": True, "error": None} for step in steps],
+            "console_errors": [],
+            "network_errors": [],
+            "screenshots": [],
+            "attempts": [
+                {
+                    "attempt": 1,
+                    "phase": "scenario",
+                    "target": "Login flow",
+                    "test_steps": steps,
+                    "execution_results": [{**step, "ok": True, "error": None} for step in steps],
+                    "console_errors": [],
+                    "network_errors": [],
+                    "screenshots": [],
+                }
+            ],
         }
 
 
@@ -208,6 +263,35 @@ def test_stepwise_executor_replans_from_updated_dom() -> None:
     assert llm.pages[1]["elements"][1]["text"] == "Delete"
     assert result["test_steps"][1]["description"] == "Click Delete"
     assert [call["purpose"] for call in store.llm_calls] == ["plan_next_step", "plan_next_step"]
+
+
+def test_component_coverage_executor_uses_llm_scenarios() -> None:
+    store = FakeStepwiseStore()
+    browser = FakeScenarioBrowser()
+    state = {
+        "run_id": "run-1",
+        "url": "https://example.com/login",
+        "title": "Login",
+        "elements": [
+            {"kind": "input", "label": "username", "selector": "#username"},
+            {"kind": "input", "label": "password", "type": "password", "selector": "#password"},
+            {"kind": "button", "text": "Login", "selector": "#login"},
+        ],
+        "run_store": store,
+        "browser": browser,
+        "llm": FakeScenarioLlm(),
+        "screenshots": [],
+        "console_errors": [],
+        "network_errors": [],
+    }
+
+    result = asyncio.run(component_coverage_executor_node(state))
+
+    assert len(browser.scenarios) == 1
+    assert [step["selector"] for step in browser.scenarios[0]["steps"]] == ["#username", "#password", "#login"]
+    assert [call["purpose"] for call in store.llm_calls] == ["plan_component_scenarios"]
+    assert len(result["attempts"]) == 1
+    assert result["attempts"][0]["phase"] == "scenario"
 
 
 def test_render_report_includes_summary_steps_issues_and_screenshots() -> None:

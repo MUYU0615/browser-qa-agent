@@ -143,6 +143,48 @@ class LLMClient:
             "fallback_reason": "" if parsed else "model_output_not_parseable",
         }
 
+    async def plan_component_scenarios_with_trace(
+        self,
+        url: str,
+        page: dict[str, Any],
+        max_components: int = 25,
+    ) -> dict[str, Any]:
+        prompt = build_component_scenario_prompt(url, page, max_components)
+        fallback = fallback_component_scenarios(page, max_components)
+        if not self.api_key:
+            return self._fallback_trace(
+                purpose="plan_component_scenarios",
+                prompt=prompt,
+                parsed_output=fallback,
+                fallback_reason="missing_api_key",
+            )
+
+        try:
+            text = await self._complete(prompt)
+        except Exception as exc:
+            return {
+                "purpose": "plan_component_scenarios",
+                "called_model": True,
+                "model": self.model,
+                "base_url": self.base_url,
+                "prompt": prompt,
+                "raw_output": "",
+                "parsed_output": fallback,
+                "fallback_reason": "model_call_failed",
+                "error": str(exc) or repr(exc),
+            }
+        scenarios = normalize_component_scenarios(extract_json_array(text), max_components)
+        return {
+            "purpose": "plan_component_scenarios",
+            "called_model": True,
+            "model": self.model,
+            "base_url": self.base_url,
+            "prompt": prompt,
+            "raw_output": text,
+            "parsed_output": scenarios or fallback,
+            "fallback_reason": "" if scenarios else "model_output_not_parseable",
+        }
+
     async def judge_observations_with_trace(self, state: dict[str, Any]) -> dict[str, Any]:
         prompt = build_judge_prompt(state)
         if not self.api_key:
@@ -256,6 +298,22 @@ def build_next_step_prompt(
     )
 
 
+def build_component_scenario_prompt(url: str, page: dict[str, Any], max_components: int) -> str:
+    return (
+        "You are a browser QA scenario planner. Return only a JSON array. "
+        "Each item must be an object with name, target_components, and steps. "
+        "Group related controls into realistic user flows instead of testing every component in isolation. "
+        "For example, a login form should be one scenario that fills username, fills password, then clicks Login. "
+        "Allowed step actions: assert_title, assert_text, click, fill, check, select. "
+        "Each step must include description and action, plus selector/value/text when needed. "
+        "The name field and every step description field must be Chinese. "
+        "Selectors and values must remain literal. "
+        "Avoid payment, purchase, unsubscribe, delete, account closing, and other high-risk or irreversible actions. "
+        f"Plan coverage for up to {max_components} interactive components.\n\n"
+        f"URL: {url}\nPage summary:\n{json.dumps(page, ensure_ascii=False, default=str)}"
+    )
+
+
 def fallback_steps(page: dict[str, Any]) -> list[dict[str, Any]]:
     steps: list[dict[str, Any]] = [
         {"description": "确认页面标题已加载", "action": "assert_title"}
@@ -286,6 +344,122 @@ def fallback_steps(page: dict[str, Any]) -> list[dict[str, Any]]:
     if len(steps) == 1:
         steps.append({"description": "检查页面是否显示标题文本", "action": "assert_text", "text": page.get("title", "")})
     return steps
+
+
+def fallback_component_scenarios(page: dict[str, Any], max_components: int = 25) -> list[dict[str, Any]]:
+    elements = [element for element in page.get("elements", []) if is_scenario_component(element)]
+    scenarios: list[dict[str, Any]] = []
+    pending_fields: list[dict[str, Any]] = []
+    covered = 0
+
+    def add_scenario(name: str, components: list[dict[str, Any]]) -> None:
+        nonlocal covered
+        if covered >= max_components:
+            return
+        selected = components[: max_components - covered]
+        steps = [component_scenario_step(component) for component in selected]
+        target_components = [component.get("selector") for component in selected if component.get("selector")]
+        if not steps:
+            return
+        scenarios.append({"name": name, "target_components": target_components, "steps": steps})
+        covered += len(selected)
+
+    for element in elements:
+        kind = element.get("kind")
+        if kind in {"input", "textarea", "select"}:
+            pending_fields.append(element)
+            continue
+
+        if kind in {"button", "link"}:
+            if pending_fields:
+                components = [*pending_fields, element]
+                add_scenario(scenario_name(components), components)
+                pending_fields = []
+            else:
+                add_scenario(scenario_name([element]), [element])
+
+    if pending_fields:
+        add_scenario(scenario_name(pending_fields), pending_fields)
+
+    return scenarios
+
+
+def normalize_component_scenarios(raw_scenarios: list[dict[str, Any]], max_components: int = 25) -> list[dict[str, Any]]:
+    scenarios: list[dict[str, Any]] = []
+    covered = 0
+    for index, scenario in enumerate(raw_scenarios, start=1):
+        steps = scenario.get("steps")
+        if not isinstance(steps, list):
+            continue
+        normalized_steps = [step for step in steps if isinstance(step, dict) and step.get("action")]
+        if not normalized_steps:
+            continue
+        if covered >= max_components:
+            break
+        normalized_steps = normalized_steps[: max_components - covered]
+        target_components = scenario.get("target_components")
+        if not isinstance(target_components, list):
+            target_components = [step.get("selector") for step in normalized_steps if step.get("selector")]
+        scenarios.append(
+            {
+                "name": str(scenario.get("name") or f"Scenario {index}"),
+                "target_components": [str(component) for component in target_components if component],
+                "steps": normalized_steps,
+            }
+        )
+        covered += len(normalized_steps)
+    return scenarios
+
+
+def is_scenario_component(component: dict[str, Any]) -> bool:
+    return bool(component.get("selector")) and not component.get("disabled") and component.get("kind") in {
+        "button",
+        "input",
+        "link",
+        "select",
+        "textarea",
+    }
+
+
+def component_scenario_step(component: dict[str, Any]) -> dict[str, Any]:
+    kind = component.get("kind")
+    selector = component.get("selector")
+    label = component_label(component)
+    if kind in {"button", "link"}:
+        return {"description": f"点击 {label}", "action": "click", "selector": selector}
+    if kind == "select":
+        return {"description": f"选择 {label}", "action": "select", "selector": selector}
+    if kind == "input" and str(component.get("type", "")).lower() in {"checkbox", "radio"}:
+        return {"description": f"切换 {label}", "action": "check", "selector": selector}
+    return {"description": f"填写 {label}", "action": "fill", "selector": selector, "value": component_fill_value(component)}
+
+
+def component_fill_value(component: dict[str, Any]) -> str:
+    field_text = " ".join(
+        str(component.get(key, "")).lower()
+        for key in ("label", "placeholder", "text", "type", "selector")
+    )
+    if "password" in field_text:
+        return "Password123!"
+    if "user" in field_text or "login" in field_text or "name" in field_text:
+        return "qa_user"
+    return "qa@example.com"
+
+
+def scenario_name(components: list[dict[str, Any]]) -> str:
+    labels = [component_label(component) for component in components]
+    text = " ".join(labels).lower()
+    if "login" in text or ("password" in text and ("user" in text or "email" in text)):
+        return "登录流程"
+    if "search" in text:
+        return "搜索流程"
+    if len(components) > 1:
+        return f"表单流程：{labels[-1]}"
+    return f"组件流程：{labels[0]}"
+
+
+def component_label(component: dict[str, Any]) -> str:
+    return str(component.get("text") or component.get("label") or component.get("placeholder") or component.get("selector") or "component")
 
 
 def fallback_next_step(

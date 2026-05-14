@@ -18,6 +18,7 @@ class QAState(TypedDict, total=False):
     issues: list[dict[str, Any]]
     retry_count: int
     max_steps: int
+    max_components: int
     report: str
     error: str
     run_store: Any

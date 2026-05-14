@@ -3,7 +3,7 @@ import { Attempt } from '../api';
 
 export function AttemptsPanel({ attempts }: { attempts: Attempt[] }) {
   if (attempts.length === 0) {
-    return <div className="empty-state"><RotateCcw size={18} /> Attempts will appear after browser execution starts.</div>;
+    return <div className="empty-state"><RotateCcw size={18} /> 浏览器执行开始后会显示尝试记录。</div>;
   }
 
   return (
@@ -11,26 +11,26 @@ export function AttemptsPanel({ attempts }: { attempts: Attempt[] }) {
       {attempts.map((attempt) => (
         <article className="attempt-item" key={`${attempt.attempt}-${attempt.phase}`}>
           <header>
-            <h3>Attempt {attempt.attempt}</h3>
-            <span>{attempt.phase}</span>
+            <h3>尝试 {attempt.attempt}</h3>
+            <span>{phaseLabel(attempt.phase)}</span>
           </header>
 
           <section>
-            <h4>Steps</h4>
+            <h4>步骤</h4>
             <ol>
               {attempt.test_steps.map((step, index) => (
-                <li key={`${attempt.attempt}-step-${index}`}>{String(step.description ?? step.action ?? 'Step')}</li>
+                <li key={`${attempt.attempt}-step-${index}`}>{String(step.description ?? step.action ?? '步骤')}</li>
               ))}
             </ol>
           </section>
 
           <section>
-            <h4>Results</h4>
+            <h4>结果</h4>
             <div className="attempt-results">
               {attempt.execution_results.map((result, index) => (
                 <div className={`attempt-result ${result.ok ? 'pass' : 'fail'}`} key={`${attempt.attempt}-result-${index}`}>
                   {result.ok ? <CheckCircle2 size={16} /> : <CircleSlash size={16} />}
-                  <span>{result.description ?? result.action ?? 'Step'}</span>
+                  <span>{result.description ?? result.action ?? '步骤'}</span>
                   {result.error ? <small>{result.error}</small> : null}
                 </div>
               ))}
@@ -38,12 +38,21 @@ export function AttemptsPanel({ attempts }: { attempts: Attempt[] }) {
           </section>
 
           <section className="attempt-signals">
-            <span>Console errors: {attempt.console_errors.length}</span>
-            <span>Network errors: {attempt.network_errors.length}</span>
-            <span>Screenshots: {attempt.screenshots.length}</span>
+            <span>控制台错误：{attempt.console_errors.length}</span>
+            <span>网络错误：{attempt.network_errors.length}</span>
+            <span>截图：{attempt.screenshots.length}</span>
           </section>
         </article>
       ))}
     </div>
   );
+}
+
+function phaseLabel(phase: string) {
+  const labels: Record<string, string> = {
+    initial: '初始',
+    retry: '重试',
+    scenario: '场景'
+  };
+  return labels[phase] ?? phase;
 }
