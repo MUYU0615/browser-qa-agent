@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>Browser QA Agent 性能测试报告</title>
+    <style>
+        body { font-family: 'Microsoft YaHei', Arial, sans-serif; margin: 20px; background: #f5f5f5; }
+        .container { max-width: 1000px; margin: 0 auto; background: white; padding: 30px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+        h1 { color: #333; border-bottom: 2px solid #4CAF50; padding-bottom: 10px; }
+        h2 { color: #4CAF50; margin-top: 30px; }
+        .summary-box { background: #e8f5e9; padding: 20px; border-radius: 5px; margin: 20px 0; }
+        .metric { display: inline-block; margin: 10px 20px; }
+        .metric-label { color: #666; font-size: 14px; }
+        .metric-value { font-size: 24px; font-weight: bold; color: #4CAF50; }
+        table { width: 100%; border-collapse: collapse; margin: 20px 0; }
+        th, td { padding: 12px; text-align: left; border-bottom: 1px solid #ddd; }
+        th { background: #4CAF50; color: white; }
+        tr:hover { background: #f5f5f5; }
+        .good { color: #4CAF50; }
+        .warning { color: #FF9800; }
+        .bad { color: #f44336; }
+        .footer { margin-top: 30px; padding-top: 20px; border-top: 1px solid #ddd; color: #666; font-size: 12px; }
+        .chart-container { margin: 20px 0; }
+        .bar { display: inline-block; height: 20px; margin: 5px; border-radius: 3px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Browser QA Agent 性能测试报告</h1>
+
+        <div class="summary-box">
+            <h2>测试概览</h2>
+            <div class="metric">
+                <div class="metric-label">总请求数</div>
+                <div class="metric-value">5,698</div>
+            </div>
+            <div class="metric">
+                <div class="metric-label">测试时长</div>
+                <div class="metric-value">29.84 秒</div>
+            </div>
+            <div class="metric">
+                <div class="metric-label">吞吐量</div>
+                <div class="metric-value good">190.94 req/s</div>
+            </div>
+            <div class="metric">
+                <div class="metric-label">错误率</div>
+                <div class="metric-value good">0%</div>
+            </div>
+            <div class="metric">
+                <div class="metric-label">平均响应时间</div>
+                <div class="metric-value">48.57 ms</div>
+            </div>
+        </div>
+
+        <h2>测试配置</h2>
+        <table>
+            <tr><th>参数</th><th>值</th></tr>
+            <tr><td>虚拟用户数</td><td>10</td></tr>
+            <tr><td>启动时间 (Ramp-up)</td><td>5 秒</td></tr>
+            <tr><td>测试持续时间</td><td>30 秒</td></tr>
+            <tr><td>测试目标</td><td>Browser QA Agent 前端 + 后端 API</td></tr>
+        </table>
+
+        <h2>各接口性能详情</h2>
+        <table>
+            <tr>
+                <th>接口名称</th>
+                <th>请求数</th>
+                <th>平均响应 (ms)</th>
+                <th>P90 (ms)</th>
+                <th>P95 (ms)</th>
+                <th>P99 (ms)</th>
+                <th>吞吐量</th>
+                <th>错误率</th>
+            </tr>
+            <tr>
+                <td>前端首页 (http://127.0.0.1:5173/)</td>
+                <td>1,900</td>
+                <td class="good">2.66</td>
+                <td>3</td>
+                <td>4</td>
+                <td>5</td>
+                <td>63.67 req/s</td>
+                <td class="good">0%</td>
+            </tr>
+            <tr>
+                <td>API健康检查 (/api/health)</td>
+                <td>1,899</td>
+                <td class="good">15.56</td>
+                <td>26</td>
+                <td>30</td>
+                <td>39</td>
+                <td>63.77 req/s</td>
+                <td class="good">0%</td>
+            </tr>
+            <tr>
+                <td>API运行列表 (/api/runs)</td>
+                <td>1,899</td>
+                <td class="warning">127.51</td>
+                <td>168</td>
+                <td>184</td>
+                <td>298</td>
+                <td>63.77 req/s</td>
+                <td class="good">0%</td>
+            </tr>
+        </table>
+
+        <h2>响应时间分布</h2>
+        <div class="chart-container">
+            <table>
+                <tr>
+                    <th>统计项</th>
+                    <th>前端首页</th>
+                    <th>健康检查</th>
+                    <th>运行列表</th>
+                </tr>
+                <tr>
+                    <td>最小值</td>
+                    <td>1 ms</td>
+                    <td>2 ms</td>
+                    <td>15 ms</td>
+                </tr>
+                <tr>
+                    <td>最大值</td>
+                    <td>45 ms</td>
+                    <td>97 ms</td>
+                    <td>402 ms</td>
+                </tr>
+                <tr>
+                    <td>中位数</td>
+                    <td>3 ms</td>
+                    <td>15 ms</td>
+                    <td>131 ms</td>
+                </tr>
+            </table>
+        </div>
+
+        <h2>性能评估</h2>
+        <div class="summary-box">
+            <h3>前端首页</h3>
+            <p><span class="good">优秀</span> - 平均响应 2.66ms，表现极佳。Vite 开发服务器静态资源响应迅速。</p>
+
+            <h3>健康检查 API</h3>
+            <p><span class="good">优秀</span> - 平均响应 15.56ms，轻量级接口性能良好。</p>
+
+            <h3>运行列表 API</h3>
+            <p><span class="warning">需关注</span> - 平均响应 127.51ms，P99 达到 298ms。该接口涉及文件系统读取 runs 目录，建议考虑缓存或索引优化。</p>
+        </div>
+
+        <h2>建议优化</h2>
+        <ul>
+            <li><strong>/api/runs 接口</strong>：响应时间较高，建议：
+                <ul>
+                    <li>添加内存缓存，减少文件系统访问</li>
+                    <li>使用异步 I/O 提高并发处理能力</li>
+                    <li>考虑分页机制，避免一次性加载大量数据</li>
+                </ul>
+            </li>
+            <li><strong>并发测试</strong>：可进一步提高并发用户数（如 50-100）测试系统极限承载能力</li>
+            <li><strong>长时间稳定性测试</strong>：建议进行 5-10 分钟持续压测，观察内存和连接稳定性</li>
+        </ul>
+
+        <div class="footer">
+            <p>测试工具：JMeter 5.6.3 | MCP Server: jmeter_mcp_server</p>
+            <p>测试时间：2026-05-13 12:30 | 测试文件：tests/performance/full_test.jmx</p>
+            <p>报告生成：Claude Code 自动生成</p>
+        </div>
+    </div>
+</body>
+</html>

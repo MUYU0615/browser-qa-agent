@@ -1,0 +1,19 @@
+# Web API
+fastapi==0.124.2
+uvicorn[standard]==0.38.0
+
+# Agent workflow
+langgraph==1.0.4
+
+# OpenAI-compatible DeepSeek client
+openai==2.14.0
+
+# Browser automation
+playwright==1.57.0
+
+# Data validation and config
+pydantic==2.12.5
+python-dotenv==1.2.2
+
+# Tests
+pytest==9.0.3

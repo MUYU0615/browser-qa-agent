@@ -1,0 +1,13 @@
+.env
+backend/.env
+backend/.venv/
+backend/.playwright-browsers/
+frontend/node_modules/
+frontend/.npm-cache/
+frontend/dist/
+.pytest_cache/
+__pycache__/
+*.pyc
+runs/*
+!runs/.gitkeep
+.mcp.json
